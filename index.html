@@ -76,13 +76,17 @@ async function startScanner(){
         stream.getTracks().forEach(t=>t.stop());
     }
 
-    codeReader = new ZXing.BrowserMultiFormatReader();
+    codeReader = new ZXing.BrowserQRCodeReader();
 
     try{
 
         stream = await navigator.mediaDevices.getUserMedia({
             video:{
-                facingMode:{ideal:"environment"}
+    facingMode:{ideal:"environment"},
+    width:{ideal:3840},
+    height:{ideal:2160},
+    focusMode:"continuous"
+}
             },
             audio:false
         });
