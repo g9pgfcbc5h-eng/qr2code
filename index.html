@@ -2,212 +2,150 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>QR → Code128</title>
 
+<script src="https://unpkg.com/@zxing/library@latest"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 
 <style>
-
 html,body{
-margin:0;
-padding:0;
-background:#000;
-width:100%;
-height:100%;
-overflow:hidden;
-font-family:Arial;
+    margin:0;
+    width:100%;
+    height:100%;
+    overflow:hidden;
+    background:#000;
+    font-family:Arial,sans-serif;
 }
 
-video{
-
-position:fixed;
-left:0;
-top:0;
-width:100%;
-height:100%;
-object-fit:cover;
-
+#video{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    background:#000;
 }
 
-canvas{
-
-display:none;
-
+#barcodeScreen{
+    position:fixed;
+    inset:0;
+    display:none;
+    background:#fff;
+    justify-content:center;
+    align-items:center;
+    flex-direction:column;
+    z-index:100;
 }
 
-#barcodePage{
-
-display:none;
-
-position:fixed;
-
-left:0;
-top:0;
-
-width:100%;
-height:100%;
-
-background:white;
-
-justify-content:center;
-align-items:center;
-flex-direction:column;
-
+#barcode{
+    width:92vw;
+    height:auto;
 }
 
-svg{
-
-width:95%;
-height:220px;
-
+#hint{
+    margin-top:20px;
+    font-size:20px;
+    color:#333;
 }
-
-#number{
-
-font-size:42px;
-font-weight:bold;
-margin-top:20px;
-
-}
-
 </style>
-
 </head>
 
 <body>
 
 <video id="video" autoplay playsinline muted></video>
 
-<canvas id="canvas"></canvas>
-
-<div id="barcodePage">
-
-<svg id="barcode"></svg>
-
-<div id="number"></div>
-
+<div id="barcodeScreen">
+    <svg id="barcode"></svg>
+    <div id="hint">Коснитесь экрана для нового сканирования</div>
 </div>
 
 <script>
 
-const video=document.getElementById("video");
-const canvas=document.getElementById("canvas");
-const ctx=canvas.getContext("2d");
+const video = document.getElementById("video");
+const barcodeScreen = document.getElementById("barcodeScreen");
 
-const page=document.getElementById("barcodePage");
+let codeReader;
+let stream;
 
-const number=document.getElementById("number");
+async function startScanner(){
 
-let detector=null;
-let busy=false;
+    barcodeScreen.style.display="none";
 
-async function init(){
+    if(stream){
+        stream.getTracks().forEach(t=>t.stop());
+    }
 
-if(!("BarcodeDetector" in window)){
+    codeReader = new ZXing.BrowserMultiFormatReader();
 
-alert("Safari не поддерживает BarcodeDetector");
+    try{
 
-return;
+        stream = await navigator.mediaDevices.getUserMedia({
+            video:{
+                facingMode:{ideal:"environment"}
+            },
+            audio:false
+        });
+
+        video.srcObject = stream;
+
+        codeReader.decodeFromVideoDevice(
+            null,
+            video,
+            (result,err)=>{
+
+                if(result){
+
+                    codeReader.reset();
+
+                    stream.getTracks().forEach(t=>t.stop());
+
+                    processQR(result.getText());
+
+                }
+
+            });
+
+    }catch(e){
+        alert("Не удалось открыть камеру\n\n"+e);
+    }
 
 }
 
-detector=new BarcodeDetector({
-formats:["qr_code"]
+function processQR(text){
+
+    const parts=text.trim().split(";");
+
+    if(parts.length<2){
+        alert("Неверный QR");
+        startScanner();
+        return;
+    }
+
+    const code=parts[1];
+
+    JsBarcode("#barcode",code,{
+        format:"CODE128",
+        displayValue:true,
+        fontSize:34,
+        margin:20,
+        height:220,
+        width:4
+    });
+
+    barcodeScreen.style.display="flex";
+
+}
+
+barcodeScreen.addEventListener("click",()=>{
+    startScanner();
 });
 
-const stream=await navigator.mediaDevices.getUserMedia({
-
-video:{
-facingMode:"environment"
-}
-
+window.addEventListener("load",()=>{
+    startScanner();
 });
 
-video.srcObject=stream;
-
-video.onloadedmetadata=()=>{
-
-scan();
-
-};
-
-}
-  async function scan(){
-
-if(busy){
-
-requestAnimationFrame(scan);
-
-return;
-
-}
-
-if(video.readyState===video.HAVE_ENOUGH_DATA){
-
-canvas.width=video.videoWidth;
-canvas.height=video.videoHeight;
-
-ctx.drawImage(video,0,0);
-
-try{
-
-const codes=await detector.detect(canvas);
-
-if(codes.length){
-
-busy=true;
-
-const text=codes[0].rawValue;
-
-const parts=text.split(";");
-
-if(parts.length>=2){
-
-const code=parts[1];
-
-video.style.display="none";
-
-page.style.display="flex";
-
-JsBarcode("#barcode",code,{
-
-format:"CODE128",
-
-displayValue:false,
-
-margin:10,
-
-height:140
-
-});
-
-number.innerText=code;
-
-}
-
-}
-
-}catch(e){}
-
-}
-
-requestAnimationFrame(scan);
-
-}
-
-page.onclick=()=>{
-
-page.style.display="none";
-
-video.style.display="block";
-
-busy=false;
-
-};
-
-init(); </script>
+</script>
 
 </body>
 </html>
