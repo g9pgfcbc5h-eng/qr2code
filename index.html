@@ -67,7 +67,8 @@ const barcodeScreen = document.getElementById("barcodeScreen");
 
 let codeReader;
 let stream;
-
+let track;
+let zoomRange = null;
 async function startScanner(){
 
     barcodeScreen.style.display="none";
@@ -92,7 +93,17 @@ async function startScanner(){
         });
 
         video.srcObject = stream;
+track = stream.getVideoTracks()[0];
 
+const caps = track.getCapabilities?.();
+
+if(caps && caps.zoom){
+
+    zoomRange = caps.zoom;
+
+    createZoomSlider();
+
+}
         codeReader.decodeFromVideoDevice(
             null,
             video,
@@ -144,7 +155,50 @@ function processQR(text){
 barcodeScreen.addEventListener("click",()=>{
     startScanner();
 });
+function createZoomSlider(){
 
+    if(document.getElementById("zoom")) return;
+
+    const slider=document.createElement("input");
+
+    slider.type="range";
+    slider.min=zoomRange.min;
+    slider.max=zoomRange.max;
+    slider.step=zoomRange.step || 0.1;
+    slider.value=Math.min(2,zoomRange.max);
+
+    slider.id="zoom";
+
+    slider.style.position="fixed";
+    slider.style.left="10px";
+    slider.style.right="10px";
+    slider.style.bottom="25px";
+    slider.style.width="calc(100% - 20px)";
+    slider.style.zIndex="9999";
+
+    slider.oninput=async()=>{
+
+        try{
+
+            await track.applyConstraints({
+
+                advanced:[{
+
+                    zoom:Number(slider.value)
+
+                }]
+
+            });
+
+        }catch(e){}
+
+    };
+
+    document.body.appendChild(slider);
+
+    slider.dispatchEvent(new Event("input"));
+
+}
 window.addEventListener("load",()=>{
     startScanner();
 });
