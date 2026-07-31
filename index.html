@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 
 <title>QR2Code</title>
 
@@ -18,7 +19,7 @@ width:100%;
 height:100%;
 overflow:hidden;
 background:#000;
-font-family:Arial;
+font-family:Arial,sans-serif;
 }
 
 #reader{
@@ -26,14 +27,17 @@ width:100vw;
 height:100vh;
 }
 
-#barcodeScreen{
+#result{
 
 display:none;
+
 position:fixed;
 left:0;
 top:0;
+
 width:100%;
 height:100%;
+
 background:white;
 
 justify-content:center;
@@ -45,15 +49,16 @@ flex-direction:column;
 svg{
 
 width:95%;
-height:250px;
+height:220px;
 
 }
 
-#number{
+#text{
 
-font-size:40px;
+font-size:42px;
 font-weight:bold;
-margin-top:20px;
+
+margin-top:25px;
 
 }
 
@@ -65,86 +70,89 @@ margin-top:20px;
 
 <div id="reader"></div>
 
-<div id="barcodeScreen">
+<div id="result">
 
 <svg id="barcode"></svg>
 
-<div id="number"></div>
+<div id="text"></div>
 
 </div>
 
 <script>
+  const result=document.getElementById("result");
+const text=document.getElementById("text");
 
-const reader=document.getElementById("reader");
-const barcodeScreen=document.getElementById("barcodeScreen");
-const number=document.getElementById("number");
+const scanner=new Html5Qrcode("reader");
 
-let scanner=new Html5Qrcode("reader");
+let busy=false;
 
 function showBarcode(code){
 
-reader.style.display="none";
+busy=true;
 
-barcodeScreen.style.display="flex";
+document.getElementById("reader").style.display="none";
+result.style.display="flex";
 
 JsBarcode("#barcode",code,{
 format:"CODE128",
 displayValue:false,
-margin:10
+margin:10,
+height:140
 });
 
-number.innerText=code;
+text.innerText=code;
 
 }
 
-function back(){
+result.onclick=()=>{
 
-barcodeScreen.style.display="none";
+result.style.display="none";
 
-reader.style.display="block";
+document.getElementById("reader").style.display="block";
 
-startScanner();
+busy=false;
 
-}
+start();
 
-barcodeScreen.onclick=back;
+};
 
-function startScanner(){
+function start(){
 
 scanner.start(
 
 {facingMode:"environment"},
 
 {
-
-fps:15,
-
-qrbox:250
-
+fps:20,
+qrbox:{width:250,height:250}
 },
 
-(text)=>{
+(decoded)=>{
 
-scanner.stop();
+if(busy)return;
 
-let parts=text.split(";");
+const parts=decoded.split(";");
 
-if(parts.length>1){
+if(parts.length>=2){
+
+scanner.stop().then(()=>{
 
 showBarcode(parts[1]);
 
-}
+});
 
 }
+
+},
+
+()=>{}
 
 );
 
 }
 
-startScanner();
-
-</script>
+start();
+  </script>
 
 </body>
-
 </html>
