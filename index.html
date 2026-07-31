@@ -1,13 +1,11 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>QR2Code</title>
+<title>QR → Code128</title>
 
-<script src="https://unpkg.com/html5-qrcode"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 
 <style>
@@ -15,23 +13,36 @@
 html,body{
 margin:0;
 padding:0;
+background:#000;
 width:100%;
 height:100%;
 overflow:hidden;
-background:#000;
-font-family:Arial,sans-serif;
+font-family:Arial;
 }
 
-#reader{
-width:100vw;
-height:100vh;
+video{
+
+position:fixed;
+left:0;
+top:0;
+width:100%;
+height:100%;
+object-fit:cover;
+
 }
 
-#result{
+canvas{
+
+display:none;
+
+}
+
+#barcodePage{
 
 display:none;
 
 position:fixed;
+
 left:0;
 top:0;
 
@@ -53,12 +64,11 @@ height:220px;
 
 }
 
-#text{
+#number{
 
 font-size:42px;
 font-weight:bold;
-
-margin-top:25px;
+margin-top:20px;
 
 }
 
@@ -68,91 +78,136 @@ margin-top:25px;
 
 <body>
 
-<div id="reader"></div>
+<video id="video" autoplay playsinline muted></video>
 
-<div id="result">
+<canvas id="canvas"></canvas>
+
+<div id="barcodePage">
 
 <svg id="barcode"></svg>
 
-<div id="text"></div>
+<div id="number"></div>
 
 </div>
 
 <script>
-  const result=document.getElementById("result");
-const text=document.getElementById("text");
 
-const scanner=new Html5Qrcode("reader");
+const video=document.getElementById("video");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
 
+const page=document.getElementById("barcodePage");
+
+const number=document.getElementById("number");
+
+let detector=null;
 let busy=false;
 
-function showBarcode(code){
+async function init(){
 
-busy=true;
+if(!("BarcodeDetector" in window)){
 
-document.getElementById("reader").style.display="none";
-result.style.display="flex";
+alert("Safari не поддерживает BarcodeDetector");
 
-JsBarcode("#barcode",code,{
-format:"CODE128",
-displayValue:false,
-margin:10,
-height:140
-});
-
-text.innerText=code;
+return;
 
 }
 
-result.onclick=()=>{
+detector=new BarcodeDetector({
+formats:["qr_code"]
+});
 
-result.style.display="none";
+const stream=await navigator.mediaDevices.getUserMedia({
 
-document.getElementById("reader").style.display="block";
+video:{
+facingMode:"environment"
+}
 
-busy=false;
+});
 
-start();
+video.srcObject=stream;
+
+video.onloadedmetadata=()=>{
+
+scan();
 
 };
 
-function start(){
+}
+  async function scan(){
 
-scanner.start(
+if(busy){
 
-{facingMode:"environment"},
+requestAnimationFrame(scan);
 
-{
-fps:20,
-qrbox:{width:250,height:250}
-},
+return;
 
-(decoded)=>{
+}
 
-if(busy)return;
+if(video.readyState===video.HAVE_ENOUGH_DATA){
 
-const parts=decoded.split(";");
+canvas.width=video.videoWidth;
+canvas.height=video.videoHeight;
+
+ctx.drawImage(video,0,0);
+
+try{
+
+const codes=await detector.detect(canvas);
+
+if(codes.length){
+
+busy=true;
+
+const text=codes[0].rawValue;
+
+const parts=text.split(";");
 
 if(parts.length>=2){
 
-scanner.stop().then(()=>{
+const code=parts[1];
 
-showBarcode(parts[1]);
+video.style.display="none";
+
+page.style.display="flex";
+
+JsBarcode("#barcode",code,{
+
+format:"CODE128",
+
+displayValue:false,
+
+margin:10,
+
+height:140
 
 });
 
-}
-
-},
-
-()=>{}
-
-);
+number.innerText=code;
 
 }
 
-start();
-  </script>
+}
+
+}catch(e){}
+
+}
+
+requestAnimationFrame(scan);
+
+}
+
+page.onclick=()=>{
+
+page.style.display="none";
+
+video.style.display="block";
+
+busy=false;
+
+};
+
+init(); </script>
 
 </body>
 </html>
