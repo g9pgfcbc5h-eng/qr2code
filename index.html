@@ -73,7 +73,7 @@
             z-index: 1;
         }
 
-        /* Визуальная рамка-прицел */
+        /* Прицел */
         #aim-box {
             width: 260px;
             height: 260px;
@@ -92,8 +92,8 @@
             content: '';
             width: 85%;
             height: 2px;
-            background-color: #ff3b30;
-            box-shadow: 0 0 10px #ff3b30;
+            background-color: #34c759;
+            box-shadow: 0 0 10px #34c759;
             position: absolute;
             animation: scanline 2.5s ease-in-out infinite;
         }
@@ -102,6 +102,30 @@
             0% { transform: translateY(-110px); }
             50% { transform: translateY(110px); }
             100% { transform: translateY(-110px); }
+        }
+
+        #ui-controls {
+            position: absolute;
+            bottom: 40px;
+            left: 0;
+            width: 100%;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+
+        #switch-camera-btn {
+            background-color: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid white;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-size: 16px;
+            backdrop-filter: blur(5px);
+            cursor: pointer;
+            display: none; 
         }
 
         #result-container {
@@ -145,7 +169,7 @@
 
     <div id="start-screen">
         <h2>QR Сканер</h2>
-        <p>Наведите камеру на QR-код.</p>
+        <p>Разрешите доступ к камере</p>
         <button id="start-button">Включить камеру</button>
         <div id="error-log"></div>
     </div>
@@ -153,6 +177,9 @@
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
         <div id="aim-box"></div>
+        <div id="ui-controls">
+            <button id="switch-camera-btn">🔄 Сменить камеру</button>
+        </div>
     </div>
 
     <div id="result-container">
@@ -161,14 +188,14 @@
     </div>
 
     <script>
-        let stream = null;
-        let isScanning = false;
-        let currentDeviceId = null;
-
-        // Инициализация ZXing
+        let videoDevices = [];
+        let currentDeviceIndex = 0;
+        
+        // Жесткие настройки ZXing для сложных/цветных фонов
         const hints = new Map();
         hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
-        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); // Включаем обратно для сложных QR
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); 
+        
         const codeReader = new ZXing.BrowserMultiFormatReader(hints);
 
         const videoElement = document.getElementById('video');
@@ -177,154 +204,113 @@
         const resultContainer = document.getElementById('result-container');
         const errorLog = document.getElementById('error-log');
         const instructionText = document.getElementById('instruction');
+        const switchBtn = document.getElementById('switch-camera-btn');
 
-        document.getElementById('start-button').addEventListener('click', () => {
+        document.getElementById('start-button').addEventListener('click', async () => {
             errorLog.innerText = ""; 
-            startCamera();
+            await initCameras();
+            startScanner();
         });
 
-        async function startCamera() {
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                errorLog.innerText = "API камеры не поддерживается браузером.";
-                return;
+        switchBtn.addEventListener('click', () => {
+            if (videoDevices.length > 1) {
+                currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+                codeReader.reset(); // Останавливаем текущий поток
+                startScanner(); // Перезапускаем с новой камерой
             }
+        });
 
-            if (stream) stopCamera();
-
+        async function initCameras() {
             try {
-                // Поиск правильной камеры (без Ultra Wide)
-                if (!currentDeviceId) {
-                    let initStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                    const devices = await navigator.mediaDevices.enumerateDevices();
-                    const videoInputs = devices.filter(d => d.kind === 'videoinput');
-                    
-                    const backCameras = videoInputs.filter(d => 
-                        d.label.toLowerCase().includes('back') || 
-                        d.label.toLowerCase().includes('задн') ||
-                        d.label.toLowerCase().includes('environment')
-                    );
+                let initStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                
+                videoDevices = devices.filter(device => 
+                    device.kind === 'videoinput' && 
+                    (!device.label.toLowerCase().includes('front') && !device.label.toLowerCase().includes('передн'))
+                );
 
-                    if (backCameras.length > 0) {
-                        const mainCamera = backCameras.find(d => 
-                            !d.label.toLowerCase().includes('ultra') && 
-                            !d.label.toLowerCase().includes('сверх') &&
-                            !d.label.toLowerCase().includes('tele')
-                        );
-                        currentDeviceId = mainCamera ? mainCamera.deviceId : backCameras[0].deviceId;
-                    }
-                    initStream.getTracks().forEach(track => track.stop());
+                if (videoDevices.length > 1) {
+                    switchBtn.style.display = 'block';
+                }
+                
+                // Ищем основную камеру (отсекаем Ultra Wide и Telephoto, если возможно)
+                let bestCameraIndex = videoDevices.findIndex(d => 
+                    !d.label.toLowerCase().includes('ultra') && 
+                    !d.label.toLowerCase().includes('сверх') &&
+                    !d.label.toLowerCase().includes('tele')
+                );
+                
+                if (bestCameraIndex !== -1) {
+                    currentDeviceIndex = bestCameraIndex;
                 }
 
-                const constraints = {
-                    video: currentDeviceId ? {
-                        deviceId: { exact: currentDeviceId },
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 }
-                    } : {
-                        facingMode: { ideal: "environment" },
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 }
-                    }
-                };
-
-                stream = await navigator.mediaDevices.getUserMedia(constraints);
-                videoElement.srcObject = stream;
-                videoElement.setAttribute("playsinline", true); 
-                
-                await videoElement.play();
-                
-                startScreen.style.display = 'none';
-                scannerContainer.style.display = 'flex';
-                
-                // РЕШЕНИЕ БАГА IOS: Ждем, пока браузер не отдаст реальные пиксели видео
-                const waitForDimensions = () => {
-                    if (videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
-                        // Размеры готовы, теперь можно применять зум и запускать сканер
-                        applyAdvancedConstraints();
-                        isScanning = true;
-                        scanLoop(); 
-                    } else {
-                        requestAnimationFrame(waitForDimensions);
-                    }
-                };
-                waitForDimensions();
-
-            } catch (error) {
-                console.error("Ошибка камеры:", error);
-                errorLog.innerText = "Ошибка запуска камеры: " + error.message;
+                initStream.getTracks().forEach(track => track.stop());
+            } catch (err) {
+                console.warn("Ошибка перечисления камер:", err);
             }
+        }
+
+        function startScanner() {
+            startScreen.style.display = 'none';
+            scannerContainer.style.display = 'flex';
+            
+            let deviceId = videoDevices.length > 0 ? videoDevices[currentDeviceIndex].deviceId : undefined;
+
+            // Нативный метод ZXing: сам захватывает видео, сам крутит цикл сканирования
+            codeReader.decodeFromVideoDevice(deviceId, videoElement, (result, err) => {
+                if (result) {
+                    const text = result.text;
+                    let extractedCode = text; 
+
+                    // Парсим строку вида: CEN;4600721000523;88.89;1;6;23.07.26
+                    if (text.includes(';')) {
+                        const parts = text.split(';');
+                        if (parts.length >= 2) {
+                            extractedCode = parts[1]; // Достаем 4600721000523
+                        }
+                    }
+
+                    // При успешном сканировании останавливаем ридер
+                    codeReader.reset();
+                    showBarcodeResult(extractedCode);
+                }
+                // Ошибки NotFoundException игнорируются, так как сканер продолжает искать
+            }).then(() => {
+                // Вызывается после того, как камера успешно запустилась.
+                // Применяем продвинутые настройки к потоку, который создал ZXing.
+                setTimeout(applyAdvancedConstraints, 1000);
+            }).catch(err => {
+                console.error(err);
+                errorLog.innerText = "Ошибка запуска сканера: " + err.message;
+                startScreen.style.display = 'flex';
+                scannerContainer.style.display = 'none';
+            });
         }
 
         function applyAdvancedConstraints() {
             try {
-                const track = stream.getVideoTracks()[0];
+                if (!videoElement.srcObject) return;
+                const track = videoElement.srcObject.getVideoTracks()[0];
                 if (track && typeof track.getCapabilities === 'function') {
-                    setTimeout(async () => {
-                        try {
-                            const capabilities = track.getCapabilities();
-                            const advanced = {};
-                            let shouldApply = false;
-
-                            if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
-                                advanced.focusMode = "continuous";
-                                shouldApply = true;
-                            }
-
-                            if (capabilities.zoom && capabilities.zoom.max) {
-                                advanced.zoom = capabilities.zoom.max;
-                                shouldApply = true;
-                            }
-
-                            if (shouldApply) {
-                                await track.applyConstraints({ advanced: [advanced] });
-                            }
-                        } catch (e) {
-                            console.warn("Не удалось применить zoom/focus:", e);
-                        }
-                    }, 500);
+                    const capabilities = track.getCapabilities();
+                    const advanced = {};
+                    
+                    if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
+                        advanced.focusMode = "continuous";
+                    }
+                    if (capabilities.zoom && capabilities.zoom.max) {
+                        // Не ставим на самый максимум, чтобы не размывать, но зумируем
+                        advanced.zoom = capabilities.zoom.max > 2 ? 2 : capabilities.zoom.max;
+                    }
+                    
+                    if (Object.keys(advanced).length > 0) {
+                        track.applyConstraints({ advanced: [advanced] }).catch(e => console.warn(e));
+                    }
                 }
             } catch (err) {
-                console.warn("Ошибка трека видео:", err);
+                console.warn(err);
             }
-        }
-
-        function stopCamera() {
-            isScanning = false;
-            if (codeReader) {
-                codeReader.reset(); // Очищаем кэш канвасов ZXing
-            }
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-                stream = null;
-            }
-            videoElement.srcObject = null;
-        }
-
-        function scanLoop() {
-            if (!isScanning) return;
-
-            codeReader.decodeOnceFromVideoElement(videoElement)
-                .then(result => {
-                    const text = result.text;
-                    let extractedCode = text; 
-
-                    // Разбираем строку CEN;4600721000523;88.89;1;6;23.07.26
-                    if (text.includes(';')) {
-                        const parts = text.split(';');
-                        if (parts.length >= 2) {
-                            extractedCode = parts[1];
-                        }
-                    }
-
-                    stopCamera();
-                    showBarcodeResult(extractedCode);
-                })
-                .catch(err => {
-                    if (isScanning) {
-                        // Задержка 100мс между кадрами, чтобы не перегревать процессор iPhone
-                        setTimeout(() => requestAnimationFrame(scanLoop), 100); 
-                    }
-                });
         }
 
         function showBarcodeResult(codeText) {
@@ -344,7 +330,7 @@
                 });
             } catch (e) {
                 document.getElementById('barcode').innerHTML = '';
-                instructionText.innerText = "Ошибка генерации штрихкода.\nСчитанный текст: " + codeText + "\n\nКоснитесь для нового сканирования.";
+                instructionText.innerText = "Ошибка генерации Code128.\nСчитанный текст: " + codeText + "\n\nКоснитесь для нового сканирования.";
                 instructionText.style.color = "#ff3b30";
                 instructionText.style.fontWeight = "bold";
             }
@@ -359,16 +345,16 @@
             instructionText.style.color = '#666666';
             instructionText.style.fontWeight = "normal";
             
-            startCamera();
+            startScanner();
         });
 
-        // Пауза при сворачивании Safari
+        // Пауза при сворачивании Safari (освобождаем камеру)
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
-                stopCamera();
+                codeReader.reset();
             } else {
                 if (resultContainer.style.display !== 'flex' && startScreen.style.display === 'none') {
-                    startCamera();
+                    startScanner();
                 }
             }
         });
