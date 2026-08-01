@@ -1,457 +1,246 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>QR → Code128</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>QR Scanner to Code128</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #000;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
 
-<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3"></script>
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+        #scanner-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
 
-<style>
-html,
-body{
-    margin:0;
-    padding:0;
-    width:100%;
-    height:100%;
-    overflow:hidden;
-    background:#000;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    touch-action:manipulation;
-}
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
 
-#cameraView{
-    position:fixed;
-    inset:0;
-    width:100%;
-    height:100%;
-    object-fit:cover;
-    background:#000;
-}
+        #result-container {
+            width: 100%;
+            height: 100%;
+            background-color: #FFFFFF;
+            display: none;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 10;
+        }
 
-#barcodeView{
-    position:fixed;
-    inset:0;
-    display:none;
-    flex-direction:column;
-    justify-content:center;
-    align-items:center;
-    background:#fff;
-    cursor:pointer;
-}
+        #barcode {
+            width: 90%;
+            max-height: 80%;
+        }
 
-#barcodeSvg{
-    width:96vw;
-    height:auto;
-}
-
-#hint{
-    margin-top:24px;
-    color:#444;
-    font-size:16px;
-    text-align:center;
-}
-</style>
+        #instruction {
+            margin-top: 30px;
+            font-size: 16px;
+            color: #666666;
+            text-align: center;
+            padding: 10px;
+        }
+    </style>
+    
+    <!-- Подключение библиотек через CDN -->
+    <script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 </head>
-
 <body>
 
-<video
-    id="cameraView"
-    autoplay
-    muted
-    playsinline
-></video>
+    <!-- Контейнер камеры -->
+    <div id="scanner-container">
+        <video id="video" playsinline autoplay muted></video>
+    </div>
 
-<div id="barcodeView">
+    <!-- Контейнер результата -->
+    <div id="result-container">
+        <svg id="barcode"></svg>
+        <div id="instruction">Коснитесь экрана для нового сканирования</div>
+    </div>
 
-<svg id="barcodeSvg"></svg>
+    <script>
+        let stream = null;
+        let isScanning = false;
+        let codeReader = null;
 
-<div id="hint">
-Коснитесь экрана для нового сканирования
-</div>
+        // Инициализация ZXing только для QR-кодов для ускорения распознавания
+        const hints = new Map();
+        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+        codeReader = new ZXing.BrowserMultiFormatReader(hints);
 
-</div>
+        const videoElement = document.getElementById('video');
+        const scannerContainer = document.getElementById('scanner-container');
+        const resultContainer = document.getElementById('result-container');
 
-<script>
-
-const video=document.getElementById("cameraView");
-const barcodeView=document.getElementById("barcodeView");
-const barcodeSvg=document.getElementById("barcodeSvg");
-
-let codeReader=null;
-let mediaStream=null;
-let currentDeviceId=null;
-let scanning=false;
-
-const hints=new Map();
-
-hints.set(
-ZXing.DecodeHintType.POSSIBLE_FORMATS,
-[
-ZXing.BarcodeFormat.QR_CODE
-]
-);
-
-codeReader=new ZXing.BrowserMultiFormatReader(hints);
-
-async function stopCamera(){
-
-scanning=false;
-
-try{
-
-codeReader.reset();
-
-}catch(e){}
-
-if(mediaStream){
-
-mediaStream.getTracks().forEach(track=>{
-
-try{
-track.stop();
-}catch(e){}
-
-});
-
-mediaStream=null;
-
-}
-
-video.srcObject=null;
-
-}
-    async function applyCameraSettings(track){
-
-    try{
-
-        const capabilities=track.getCapabilities
-            ?track.getCapabilities()
-            :null;
-
-        if(!capabilities){
-            return;
-        }
-
-        const advanced=[];
-
-        if(capabilities.focusMode){
-
-            if(
-                Array.isArray(capabilities.focusMode) &&
-                capabilities.focusMode.includes("continuous")
-            ){
-
-                advanced.push({
-                    focusMode:"continuous"
-                });
-
+        async function startCamera() {
+            if (stream) {
+                stopCamera();
             }
 
-        }
-
-        if(capabilities.zoom){
-
-            try{
-
-                const maxZoom=capabilities.zoom.max;
-
-                if(typeof maxZoom==="number"){
-
-                    advanced.push({
-                        zoom:maxZoom
-                    });
-
+            const constraints = {
+                video: {
+                    facingMode: "environment",
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
                 }
+            };
 
-            }catch(e){}
+            try {
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                videoElement.srcObject = stream;
+                videoElement.setAttribute("playsinline", true); 
+                
+                await videoElement.play();
+                
+                // Применение расширенных настроек камеры (Zoom и Фокус)
+                applyAdvancedConstraints();
 
-        }
-
-        if(advanced.length){
-
-            try{
-
-                await track.applyConstraints({
-                    advanced:advanced
-                });
-
-            }catch(e){}
-
-        }
-
-    }catch(e){}
-
-}
-
-async function startCamera(){
-
-    await stopCamera();
-
-    barcodeView.style.display="none";
-
-    video.style.display="block";
-
-    scanning=true;
-
-    let stream=null;
-
-    try{
-
-        stream=await navigator.mediaDevices.getUserMedia({
-
-            audio:false,
-
-            video:{
-
-                facingMode:{
-                    ideal:"environment"
-                },
-
-                width:{
-                    ideal:1920
-                },
-
-                height:{
-                    ideal:1080
-                }
-
+                isScanning = true;
+                scanLoop();
+            } catch (error) {
+                console.error("Ошибка доступа к камере:", error);
+                alert("Не удалось получить доступ к камере. Проверьте разрешения.");
             }
+        }
 
+        function applyAdvancedConstraints() {
+            try {
+                const track = stream.getVideoTracks()[0];
+                if (track && typeof track.getCapabilities === 'function') {
+                    // Небольшая задержка, чтобы iOS Safari успел загрузить возможности камеры
+                    setTimeout(async () => {
+                        try {
+                            const capabilities = track.getCapabilities();
+                            const advanced = {};
+                            let shouldApply = false;
+
+                            // Непрерывный автофокус
+                            if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
+                                advanced.focusMode = "continuous";
+                                shouldApply = true;
+                            }
+
+                            // Максимальный зум
+                            if (capabilities.zoom && capabilities.zoom.max) {
+                                advanced.zoom = capabilities.zoom.max;
+                                shouldApply = true;
+                            }
+
+                            if (shouldApply) {
+                                await track.applyConstraints({ advanced: [advanced] });
+                                console.log("Применены расширенные настройки камеры:", advanced);
+                            }
+                        } catch (e) {
+                            console.warn("Не удалось применить расширенные настройки (zoom/focus):", e);
+                        }
+                    }, 500);
+                }
+            } catch (err) {
+                console.warn("Ошибка при получении трека видео:", err);
+            }
+        }
+
+        function stopCamera() {
+            isScanning = false;
+            if (stream) {
+                stream.getTracks().forEach(track => {
+                    track.stop();
+                });
+                stream = null;
+            }
+            videoElement.srcObject = null;
+        }
+
+        function scanLoop() {
+            if (!isScanning) return;
+
+            codeReader.decodeOnceFromVideoElement(videoElement)
+                .then(result => {
+                    const text = result.text;
+                    const parts = text.split(';');
+                    
+                    // Проверка формата (ожидаем минимум 2 поля)
+                    if (parts.length >= 2) {
+                        const extractedCode = parts[1]; // Берем второе поле
+                        stopCamera();
+                        showBarcodeResult(extractedCode);
+                    } else {
+                        // Если QR не того формата, продолжаем искать
+                        setTimeout(scanLoop, 100);
+                    }
+                })
+                .catch(err => {
+                    // Игнорируем ошибку NotFoundException (когда штрихкод не найден в текущем кадре)
+                    if (err && err.name !== 'NotFoundException') {
+                        console.warn("Ошибка декодирования:", err);
+                    }
+                    if (isScanning) {
+                        setTimeout(scanLoop, 100); // 10 FPS для экономии батареи и стабильной работы
+                    }
+                });
+        }
+
+        function showBarcodeResult(codeText) {
+            scannerContainer.style.display = 'none';
+            resultContainer.style.display = 'flex';
+
+            // Генерация Code128 в SVG через JsBarcode
+            JsBarcode("#barcode", codeText, {
+                format: "CODE128",
+                displayValue: true,
+                fontSize: 24,
+                margin: 10,
+                width: 3, 
+                height: 150,
+                background: "#ffffff",
+                lineColor: "#000000"
+            });
+        }
+
+        // Обработка тапа по результату для нового сканирования
+        resultContainer.addEventListener('click', () => {
+            resultContainer.style.display = 'none';
+            scannerContainer.style.display = 'flex';
+            
+            // Очистка предыдущего штрихкода (необязательно, но полезно)
+            document.getElementById('barcode').innerHTML = '';
+            
+            startCamera();
         });
 
-    }catch(firstError){
+        // Запуск камеры при загрузке страницы
+        window.addEventListener('load', () => {
+            startCamera();
+        });
 
-        try{
-
-            stream=await navigator.mediaDevices.getUserMedia({
-
-                audio:false,
-
-                video:{
-                    facingMode:"environment"
+        // Корректное освобождение камеры при закрытии/скрытии вкладки
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                stopCamera();
+            } else {
+                if (resultContainer.style.display !== 'flex') {
+                    startCamera();
                 }
-
-            });
-
-        }catch(secondError){
-
-            alert("Не удалось открыть заднюю камеру.");
-
-            return;
-
-        }
-
-    }
-
-    mediaStream=stream;
-
-    video.srcObject=stream;
-
-    await video.play();
-
-    const track=stream.getVideoTracks()[0];
-
-    if(track){
-
-        currentDeviceId=track.getSettings().deviceId||null;
-
-        await applyCameraSettings(track);
-
-    }
-
-    scanLoop();
-
-}
-
-async function scanLoop(){
-
-    while(scanning){
-
-        try{
-
-            const result=await codeReader.decodeOnceFromVideoElement(video);
-
-            if(result){
-
-                await onQrDetected(result.getText());
-
-                return;
-
             }
-
-        }catch(e){
-
-            if(
-                e instanceof ZXing.NotFoundException
-            ){
-
-            }else{
-
-                await new Promise(resolve=>setTimeout(resolve,100));
-
-            }
-
-        }
-
-    }
-
-}
-   async function onQrDetected(text){
-
-    scanning=false;
-
-    await stopCamera();
-
-    const parts=text.split(";");
-
-    if(parts.length<2){
-
-        alert("Неверный формат QR-кода.");
-
-        await startCamera();
-
-        return;
-
-    }
-
-    const code128Value=parts[1].trim();
-
-    if(!code128Value){
-
-        alert("Не удалось извлечь код.");
-
-        await startCamera();
-
-        return;
-
-    }
-
-    try{
-
-        JsBarcode(
-            "#barcodeSvg",
-            code128Value,
-            {
-                format:"CODE128",
-                width:4,
-                height:240,
-                margin:20,
-                displayValue:true,
-                fontSize:42,
-                textMargin:12,
-                background:"#ffffff",
-                lineColor:"#000000"
-            }
-        );
-
-    }catch(e){
-
-        alert("Ошибка генерации штрихкода.");
-
-        await startCamera();
-
-        return;
-
-    }
-
-    video.style.display="none";
-
-    barcodeView.style.display="flex";
-
-}
-
-barcodeView.addEventListener("click",async()=>{
-
-    if(scanning){
-        return;
-    }
-
-    barcodeView.style.display="none";
-
-    await startCamera();
-
-});
-
-window.addEventListener("pageshow",async()=>{
-
-    try{
-
-        await startCamera();
-
-    }catch(e){
-
-        console.error(e);
-
-    }
-
-});
-
-window.addEventListener("beforeunload",async()=>{
-
-    await stopCamera();
-
-});
-
-document.addEventListener("visibilitychange",async()=>{
-
-    if(document.hidden){
-
-        await stopCamera();
-
-    }
-
-});
-    window.addEventListener("pagehide",async()=>{
-
-    await stopCamera();
-
-});
-
-window.addEventListener("focus",async()=>{
-
-    if(
-        !document.hidden &&
-        !scanning &&
-        barcodeView.style.display!=="flex"
-    ){
-
-        try{
-
-            await startCamera();
-
-        }catch(e){
-
-            console.error(e);
-
-        }
-
-    }
-
-});
-
-if(
-    navigator.mediaDevices &&
-    navigator.mediaDevices.getUserMedia
-){
-
-    startCamera().catch(function(error){
-
-        console.error(error);
-
-        alert("Не удалось получить доступ к камере.");
-
-    });
-
-}else{
-
-    alert("Ваш браузер не поддерживает MediaDevices API.");
-
-}
-
-</script>
-
+        });
+    </script>
 </body>
 </html>
