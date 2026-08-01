@@ -73,7 +73,7 @@
             z-index: 1;
         }
 
-        /* Визуальная рамка */
+        /* Визуальная рамка-прицел */
         #aim-box {
             width: 260px;
             height: 260px;
@@ -143,7 +143,6 @@
 </head>
 <body>
 
-    <!-- Стартовый экран -->
     <div id="start-screen">
         <h2>QR Сканер</h2>
         <p>Наведите камеру на QR-код.</p>
@@ -151,13 +150,11 @@
         <div id="error-log"></div>
     </div>
 
-    <!-- Контейнер камеры с прицелом -->
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
         <div id="aim-box"></div>
     </div>
 
-    <!-- Контейнер результата -->
     <div id="result-container">
         <svg id="barcode"></svg>
         <div id="instruction">Коснитесь экрана для нового сканирования</div>
@@ -168,9 +165,10 @@
         let isScanning = false;
         let currentDeviceId = null;
 
-        // Инициализация ZXing (оставили только QR для скорости, убрали TRY_HARDER)
+        // Инициализация ZXing
         const hints = new Map();
         hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); // Включаем обратно для сложных QR
         const codeReader = new ZXing.BrowserMultiFormatReader(hints);
 
         const videoElement = document.getElementById('video');
@@ -194,6 +192,7 @@
             if (stream) stopCamera();
 
             try {
+                // Поиск правильной камеры (без Ultra Wide)
                 if (!currentDeviceId) {
                     let initStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
                     const devices = await navigator.mediaDevices.enumerateDevices();
@@ -201,7 +200,8 @@
                     
                     const backCameras = videoInputs.filter(d => 
                         d.label.toLowerCase().includes('back') || 
-                        d.label.toLowerCase().includes('задн')
+                        d.label.toLowerCase().includes('задн') ||
+                        d.label.toLowerCase().includes('environment')
                     );
 
                     if (backCameras.length > 0) {
@@ -221,7 +221,7 @@
                         width: { ideal: 1920 },
                         height: { ideal: 1080 }
                     } : {
-                        facingMode: "environment",
+                        facingMode: { ideal: "environment" },
                         width: { ideal: 1920 },
                         height: { ideal: 1080 }
                     }
@@ -236,10 +236,19 @@
                 startScreen.style.display = 'none';
                 scannerContainer.style.display = 'flex';
                 
-                applyAdvancedConstraints();
+                // РЕШЕНИЕ БАГА IOS: Ждем, пока браузер не отдаст реальные пиксели видео
+                const waitForDimensions = () => {
+                    if (videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+                        // Размеры готовы, теперь можно применять зум и запускать сканер
+                        applyAdvancedConstraints();
+                        isScanning = true;
+                        scanLoop(); 
+                    } else {
+                        requestAnimationFrame(waitForDimensions);
+                    }
+                };
+                waitForDimensions();
 
-                isScanning = true;
-                scanLoop();
             } catch (error) {
                 console.error("Ошибка камеры:", error);
                 errorLog.innerText = "Ошибка запуска камеры: " + error.message;
@@ -281,6 +290,9 @@
 
         function stopCamera() {
             isScanning = false;
+            if (codeReader) {
+                codeReader.reset(); // Очищаем кэш канвасов ZXing
+            }
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
                 stream = null;
@@ -294,9 +306,9 @@
             codeReader.decodeOnceFromVideoElement(videoElement)
                 .then(result => {
                     const text = result.text;
-                    let extractedCode = text; // По умолчанию берем весь текст (для тестов)
+                    let extractedCode = text; 
 
-                    // Если формат соответствует целевому, берем второе поле
+                    // Разбираем строку CEN;4600721000523;88.89;1;6;23.07.26
                     if (text.includes(';')) {
                         const parts = text.split(';');
                         if (parts.length >= 2) {
@@ -309,8 +321,8 @@
                 })
                 .catch(err => {
                     if (isScanning) {
-                        // Увеличена задержка, чтобы процессор успевал отрабатывать 1080p поток
-                        setTimeout(scanLoop, 150); 
+                        // Задержка 100мс между кадрами, чтобы не перегревать процессор iPhone
+                        setTimeout(() => requestAnimationFrame(scanLoop), 100); 
                     }
                 });
         }
@@ -331,20 +343,18 @@
                     lineColor: "#000000"
                 });
             } catch (e) {
-                // Если считанный код (например, URL) содержит символы, которые нельзя превратить в Code128
                 document.getElementById('barcode').innerHTML = '';
-                instructionText.innerText = "Ошибка генерации штрихкода. Текст из QR: " + codeText + "\n\nКоснитесь для нового сканирования.";
+                instructionText.innerText = "Ошибка генерации штрихкода.\nСчитанный текст: " + codeText + "\n\nКоснитесь для нового сканирования.";
                 instructionText.style.color = "#ff3b30";
                 instructionText.style.fontWeight = "bold";
             }
         }
 
-        // Клик по экрану результата для возврата к сканеру
+        // Возврат к камере по клику
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
             
-            // Сброс текста инструкции в исходное состояние
             instructionText.innerText = 'Коснитесь экрана для нового сканирования';
             instructionText.style.color = '#666666';
             instructionText.style.fontWeight = "normal";
@@ -352,6 +362,7 @@
             startCamera();
         });
 
+        // Пауза при сворачивании Safari
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopCamera();
