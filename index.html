@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -44,29 +43,65 @@
             border-radius: 10px;
             cursor: pointer;
             margin-top: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }
 
         #error-log {
             color: #ff4444;
             margin-top: 20px;
             font-size: 14px;
-            max-width: 80%;
+            max-width: 90%;
+            word-wrap: break-word;
         }
 
         #scanner-container {
             width: 100%;
             height: 100%;
-            display: flex;
+            display: none;
             justify-content: center;
             align-items: center;
             position: relative;
-            display: none; /* Скрыто до нажатия кнопки */
         }
 
         #video {
             width: 100%;
             height: 100%;
             object-fit: cover;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Визуальная рамка для помощи с фокусировкой */
+        #aim-box {
+            width: 260px;
+            height: 260px;
+            border: 2px solid rgba(255, 255, 255, 0.7);
+            border-radius: 24px;
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5); /* Затемнение фона вокруг */
+            position: absolute;
+            z-index: 2;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+        }
+
+        #aim-box::after {
+            content: '';
+            width: 85%;
+            height: 2px;
+            background-color: #ff3b30;
+            box-shadow: 0 0 10px #ff3b30;
+            position: absolute;
+            animation: scanline 2.5s ease-in-out infinite;
+        }
+
+        @keyframes scanline {
+            0% { transform: translateY(-110px); }
+            50% { transform: translateY(110px); }
+            100% { transform: translateY(-110px); }
         }
 
         #result-container {
@@ -104,17 +139,18 @@
 </head>
 <body>
 
-    <!-- Стартовый экран (требование iOS Safari для жеста пользователя) -->
+    <!-- Стартовый экран -->
     <div id="start-screen">
         <h2>QR Сканер</h2>
-        <p>Для работы требуется доступ к камере.</p>
+        <p>Наведите камеру на QR-код.</p>
         <button id="start-button">Включить камеру</button>
         <div id="error-log"></div>
     </div>
 
-    <!-- Контейнер камеры -->
+    <!-- Контейнер камеры с прицелом -->
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
+        <div id="aim-box"></div>
     </div>
 
     <!-- Контейнер результата -->
@@ -126,12 +162,13 @@
     <script>
         let stream = null;
         let isScanning = false;
-        let codeReader = null;
+        let currentDeviceId = null; // Для кэширования правильной камеры
 
-        // Инициализация ZXing только для QR-кодов для ускорения распознавания
+        // Инициализация ZXing: только QR + режим TRY_HARDER для маленьких кодов
         const hints = new Map();
         hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
-        codeReader = new ZXing.BrowserMultiFormatReader(hints);
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); 
+        const codeReader = new ZXing.BrowserMultiFormatReader(hints);
 
         const videoElement = document.getElementById('video');
         const startScreen = document.getElementById('start-screen');
@@ -140,53 +177,77 @@
         const errorLog = document.getElementById('error-log');
 
         document.getElementById('start-button').addEventListener('click', () => {
-            errorLog.innerText = ""; // Очищаем логи
+            errorLog.innerText = ""; 
             startCamera();
         });
 
         async function startCamera() {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                errorLog.innerText = "Ошибка: Ваше устройство или браузер не поддерживает API камеры. Убедитесь, что сайт открыт по HTTPS.";
+                errorLog.innerText = "API камеры не поддерживается браузером.";
                 return;
             }
 
-            if (stream) {
-                stopCamera();
-            }
-
-            const constraints = {
-                video: {
-                    facingMode: "environment",
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 }
-                }
-            };
+            if (stream) stopCamera();
 
             try {
+                // Если мы еще не определили лучшую камеру (исключаем Ultra Wide на iPhone)
+                if (!currentDeviceId) {
+                    // 1. Запрашиваем базовый доступ, чтобы iOS отдала названия устройств
+                    let initStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+                    
+                    // 2. Получаем список всех устройств
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const videoInputs = devices.filter(d => d.kind === 'videoinput');
+                    
+                    // 3. Фильтруем задние камеры
+                    const backCameras = videoInputs.filter(d => 
+                        d.label.toLowerCase().includes('back') || 
+                        d.label.toLowerCase().includes('задн')
+                    );
+
+                    if (backCameras.length > 0) {
+                        // Ищем основную камеру, игнорируя сверхширокоугольную (Ultra Wide), у которой нет макро-фокуса
+                        const mainCamera = backCameras.find(d => 
+                            !d.label.toLowerCase().includes('ultra') && 
+                            !d.label.toLowerCase().includes('сверх')
+                        );
+                        currentDeviceId = mainCamera ? mainCamera.deviceId : backCameras[0].deviceId;
+                    }
+
+                    // Закрываем первичный поток
+                    initStream.getTracks().forEach(track => track.stop());
+                }
+
+                // Формируем финальные настройки для камеры
+                const constraints = {
+                    video: currentDeviceId ? {
+                        deviceId: { exact: currentDeviceId },
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    } : {
+                        facingMode: "environment",
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    }
+                };
+
+                // Запускаем камеру
                 stream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = stream;
                 videoElement.setAttribute("playsinline", true); 
                 
                 await videoElement.play();
                 
-                // Переключаем интерфейс
                 startScreen.style.display = 'none';
                 scannerContainer.style.display = 'flex';
                 
-                // Применение расширенных настроек камеры (Zoom и Фокус)
                 applyAdvancedConstraints();
 
                 isScanning = true;
                 scanLoop();
             } catch (error) {
-                console.error("Ошибка доступа к камере:", error);
-                if (error.name === 'NotAllowedError') {
-                    errorLog.innerText = "Доступ к камере запрещен. Разрешите доступ в настройках Safari.";
-                } else if (window.location.protocol !== 'https:') {
-                    errorLog.innerText = "Ошибка: Браузер блокирует камеру, так как сайт использует HTTP. Необходим HTTPS.";
-                } else {
-                    errorLog.innerText = "Не удалось запустить камеру: " + error.message;
-                }
+                console.error("Ошибка камеры:", error);
+                errorLog.innerText = "Ошибка запуска камеры: " + error.message;
             }
         }
 
@@ -200,11 +261,13 @@
                             const advanced = {};
                             let shouldApply = false;
 
+                            // Включаем непрерывный автофокус
                             if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
                                 advanced.focusMode = "continuous";
                                 shouldApply = true;
                             }
 
+                            // Включаем максимальный зум, как требовалось в задаче
                             if (capabilities.zoom && capabilities.zoom.max) {
                                 advanced.zoom = capabilities.zoom.max;
                                 shouldApply = true;
@@ -214,21 +277,19 @@
                                 await track.applyConstraints({ advanced: [advanced] });
                             }
                         } catch (e) {
-                            console.warn("Не удалось применить расширенные настройки (zoom/focus):", e);
+                            console.warn("Не удалось применить zoom/focus:", e);
                         }
                     }, 500);
                 }
             } catch (err) {
-                console.warn("Ошибка при получении трека видео:", err);
+                console.warn("Ошибка трека видео:", err);
             }
         }
 
         function stopCamera() {
             isScanning = false;
             if (stream) {
-                stream.getTracks().forEach(track => {
-                    track.stop();
-                });
+                stream.getTracks().forEach(track => track.stop());
                 stream = null;
             }
             videoElement.srcObject = null;
@@ -242,17 +303,19 @@
                     const text = result.text;
                     const parts = text.split(';');
                     
+                    // Проверяем соответствие нужному формату (минимум 2 части, разделенные ';')
                     if (parts.length >= 2) {
-                        const extractedCode = parts[1];
+                        const extractedCode = parts[1]; // Достаем "4600721000523"
                         stopCamera();
                         showBarcodeResult(extractedCode);
                     } else {
-                        setTimeout(scanLoop, 100);
+                        // Если QR не того формата, продолжаем искать
+                        setTimeout(scanLoop, 50);
                     }
                 })
                 .catch(err => {
                     if (isScanning) {
-                        setTimeout(scanLoop, 100); 
+                        setTimeout(scanLoop, 50); // Уменьшил задержку для большей скорости считывания
                     }
                 });
         }
@@ -261,6 +324,7 @@
             scannerContainer.style.display = 'none';
             resultContainer.style.display = 'flex';
 
+            // Генерация штрихкода исключительно в SVG
             JsBarcode("#barcode", codeText, {
                 format: "CODE128",
                 displayValue: true,
@@ -273,13 +337,14 @@
             });
         }
 
+        // Клик по экрану результата для возврата к сканеру
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
-            // Перезапускаем камеру сразу по тапу (жест пользователя есть, проблем не будет)
             startCamera();
         });
 
+        // Остановка камеры при скрытии страницы (чтобы не жрать батарею)
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopCamera();
@@ -292,3 +357,5 @@
     </script>
 </body>
 </html>
+
+
