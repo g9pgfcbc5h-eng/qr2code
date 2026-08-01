@@ -73,13 +73,13 @@
             z-index: 1;
         }
 
-        /* Визуальная рамка для помощи с фокусировкой */
+        /* Визуальная рамка */
         #aim-box {
             width: 260px;
             height: 260px;
             border: 2px solid rgba(255, 255, 255, 0.7);
             border-radius: 24px;
-            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5); /* Затемнение фона вокруг */
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
             position: absolute;
             z-index: 2;
             display: flex;
@@ -117,11 +117,14 @@
             top: 0;
             left: 0;
             z-index: 10;
+            padding: 20px;
+            box-sizing: border-box;
+            text-align: center;
         }
 
         #barcode {
             width: 90%;
-            max-height: 80%;
+            max-height: 70%;
         }
 
         #instruction {
@@ -130,10 +133,11 @@
             color: #666666;
             text-align: center;
             padding: 10px;
+            word-wrap: break-word;
+            max-width: 100%;
         }
     </style>
     
-    <!-- Подключение библиотек через CDN -->
     <script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 </head>
@@ -162,12 +166,11 @@
     <script>
         let stream = null;
         let isScanning = false;
-        let currentDeviceId = null; // Для кэширования правильной камеры
+        let currentDeviceId = null;
 
-        // Инициализация ZXing: только QR + режим TRY_HARDER для маленьких кодов
+        // Инициализация ZXing (оставили только QR для скорости, убрали TRY_HARDER)
         const hints = new Map();
         hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
-        hints.set(ZXing.DecodeHintType.TRY_HARDER, true); 
         const codeReader = new ZXing.BrowserMultiFormatReader(hints);
 
         const videoElement = document.getElementById('video');
@@ -175,6 +178,7 @@
         const scannerContainer = document.getElementById('scanner-container');
         const resultContainer = document.getElementById('result-container');
         const errorLog = document.getElementById('error-log');
+        const instructionText = document.getElementById('instruction');
 
         document.getElementById('start-button').addEventListener('click', () => {
             errorLog.innerText = ""; 
@@ -190,35 +194,27 @@
             if (stream) stopCamera();
 
             try {
-                // Если мы еще не определили лучшую камеру (исключаем Ultra Wide на iPhone)
                 if (!currentDeviceId) {
-                    // 1. Запрашиваем базовый доступ, чтобы iOS отдала названия устройств
                     let initStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                    
-                    // 2. Получаем список всех устройств
                     const devices = await navigator.mediaDevices.enumerateDevices();
                     const videoInputs = devices.filter(d => d.kind === 'videoinput');
                     
-                    // 3. Фильтруем задние камеры
                     const backCameras = videoInputs.filter(d => 
                         d.label.toLowerCase().includes('back') || 
                         d.label.toLowerCase().includes('задн')
                     );
 
                     if (backCameras.length > 0) {
-                        // Ищем основную камеру, игнорируя сверхширокоугольную (Ultra Wide), у которой нет макро-фокуса
                         const mainCamera = backCameras.find(d => 
                             !d.label.toLowerCase().includes('ultra') && 
-                            !d.label.toLowerCase().includes('сверх')
+                            !d.label.toLowerCase().includes('сверх') &&
+                            !d.label.toLowerCase().includes('tele')
                         );
                         currentDeviceId = mainCamera ? mainCamera.deviceId : backCameras[0].deviceId;
                     }
-
-                    // Закрываем первичный поток
                     initStream.getTracks().forEach(track => track.stop());
                 }
 
-                // Формируем финальные настройки для камеры
                 const constraints = {
                     video: currentDeviceId ? {
                         deviceId: { exact: currentDeviceId },
@@ -231,7 +227,6 @@
                     }
                 };
 
-                // Запускаем камеру
                 stream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = stream;
                 videoElement.setAttribute("playsinline", true); 
@@ -261,13 +256,11 @@
                             const advanced = {};
                             let shouldApply = false;
 
-                            // Включаем непрерывный автофокус
                             if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
                                 advanced.focusMode = "continuous";
                                 shouldApply = true;
                             }
 
-                            // Включаем максимальный зум, как требовалось в задаче
                             if (capabilities.zoom && capabilities.zoom.max) {
                                 advanced.zoom = capabilities.zoom.max;
                                 shouldApply = true;
@@ -301,21 +294,23 @@
             codeReader.decodeOnceFromVideoElement(videoElement)
                 .then(result => {
                     const text = result.text;
-                    const parts = text.split(';');
-                    
-                    // Проверяем соответствие нужному формату (минимум 2 части, разделенные ';')
-                    if (parts.length >= 2) {
-                        const extractedCode = parts[1]; // Достаем "4600721000523"
-                        stopCamera();
-                        showBarcodeResult(extractedCode);
-                    } else {
-                        // Если QR не того формата, продолжаем искать
-                        setTimeout(scanLoop, 50);
+                    let extractedCode = text; // По умолчанию берем весь текст (для тестов)
+
+                    // Если формат соответствует целевому, берем второе поле
+                    if (text.includes(';')) {
+                        const parts = text.split(';');
+                        if (parts.length >= 2) {
+                            extractedCode = parts[1];
+                        }
                     }
+
+                    stopCamera();
+                    showBarcodeResult(extractedCode);
                 })
                 .catch(err => {
                     if (isScanning) {
-                        setTimeout(scanLoop, 50); // Уменьшил задержку для большей скорости считывания
+                        // Увеличена задержка, чтобы процессор успевал отрабатывать 1080p поток
+                        setTimeout(scanLoop, 150); 
                     }
                 });
         }
@@ -324,27 +319,39 @@
             scannerContainer.style.display = 'none';
             resultContainer.style.display = 'flex';
 
-            // Генерация штрихкода исключительно в SVG
-            JsBarcode("#barcode", codeText, {
-                format: "CODE128",
-                displayValue: true,
-                fontSize: 24,
-                margin: 10,
-                width: 3, 
-                height: 150,
-                background: "#ffffff",
-                lineColor: "#000000"
-            });
+            try {
+                JsBarcode("#barcode", codeText, {
+                    format: "CODE128",
+                    displayValue: true,
+                    fontSize: 24,
+                    margin: 10,
+                    width: 3, 
+                    height: 150,
+                    background: "#ffffff",
+                    lineColor: "#000000"
+                });
+            } catch (e) {
+                // Если считанный код (например, URL) содержит символы, которые нельзя превратить в Code128
+                document.getElementById('barcode').innerHTML = '';
+                instructionText.innerText = "Ошибка генерации штрихкода. Текст из QR: " + codeText + "\n\nКоснитесь для нового сканирования.";
+                instructionText.style.color = "#ff3b30";
+                instructionText.style.fontWeight = "bold";
+            }
         }
 
         // Клик по экрану результата для возврата к сканеру
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
+            
+            // Сброс текста инструкции в исходное состояние
+            instructionText.innerText = 'Коснитесь экрана для нового сканирования';
+            instructionText.style.color = '#666666';
+            instructionText.style.fontWeight = "normal";
+            
             startCamera();
         });
 
-        // Остановка камеры при скрытии страницы (чтобы не жрать батарею)
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopCamera();
@@ -357,5 +364,3 @@
     </script>
 </body>
 </html>
-
-
