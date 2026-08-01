@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -15,6 +16,43 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
+        #start-screen {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background-color: #111;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 20;
+            color: white;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        #start-button {
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #000;
+            background-color: #fff;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+
+        #error-log {
+            color: #ff4444;
+            margin-top: 20px;
+            font-size: 14px;
+            max-width: 80%;
+        }
+
         #scanner-container {
             width: 100%;
             height: 100%;
@@ -22,6 +60,7 @@
             justify-content: center;
             align-items: center;
             position: relative;
+            display: none; /* Скрыто до нажатия кнопки */
         }
 
         #video {
@@ -65,6 +104,14 @@
 </head>
 <body>
 
+    <!-- Стартовый экран (требование iOS Safari для жеста пользователя) -->
+    <div id="start-screen">
+        <h2>QR Сканер</h2>
+        <p>Для работы требуется доступ к камере.</p>
+        <button id="start-button">Включить камеру</button>
+        <div id="error-log"></div>
+    </div>
+
     <!-- Контейнер камеры -->
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
@@ -87,10 +134,22 @@
         codeReader = new ZXing.BrowserMultiFormatReader(hints);
 
         const videoElement = document.getElementById('video');
+        const startScreen = document.getElementById('start-screen');
         const scannerContainer = document.getElementById('scanner-container');
         const resultContainer = document.getElementById('result-container');
+        const errorLog = document.getElementById('error-log');
+
+        document.getElementById('start-button').addEventListener('click', () => {
+            errorLog.innerText = ""; // Очищаем логи
+            startCamera();
+        });
 
         async function startCamera() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                errorLog.innerText = "Ошибка: Ваше устройство или браузер не поддерживает API камеры. Убедитесь, что сайт открыт по HTTPS.";
+                return;
+            }
+
             if (stream) {
                 stopCamera();
             }
@@ -110,6 +169,10 @@
                 
                 await videoElement.play();
                 
+                // Переключаем интерфейс
+                startScreen.style.display = 'none';
+                scannerContainer.style.display = 'flex';
+                
                 // Применение расширенных настроек камеры (Zoom и Фокус)
                 applyAdvancedConstraints();
 
@@ -117,7 +180,13 @@
                 scanLoop();
             } catch (error) {
                 console.error("Ошибка доступа к камере:", error);
-                alert("Не удалось получить доступ к камере. Проверьте разрешения.");
+                if (error.name === 'NotAllowedError') {
+                    errorLog.innerText = "Доступ к камере запрещен. Разрешите доступ в настройках Safari.";
+                } else if (window.location.protocol !== 'https:') {
+                    errorLog.innerText = "Ошибка: Браузер блокирует камеру, так как сайт использует HTTP. Необходим HTTPS.";
+                } else {
+                    errorLog.innerText = "Не удалось запустить камеру: " + error.message;
+                }
             }
         }
 
@@ -125,20 +194,17 @@
             try {
                 const track = stream.getVideoTracks()[0];
                 if (track && typeof track.getCapabilities === 'function') {
-                    // Небольшая задержка, чтобы iOS Safari успел загрузить возможности камеры
                     setTimeout(async () => {
                         try {
                             const capabilities = track.getCapabilities();
                             const advanced = {};
                             let shouldApply = false;
 
-                            // Непрерывный автофокус
                             if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
                                 advanced.focusMode = "continuous";
                                 shouldApply = true;
                             }
 
-                            // Максимальный зум
                             if (capabilities.zoom && capabilities.zoom.max) {
                                 advanced.zoom = capabilities.zoom.max;
                                 shouldApply = true;
@@ -146,7 +212,6 @@
 
                             if (shouldApply) {
                                 await track.applyConstraints({ advanced: [advanced] });
-                                console.log("Применены расширенные настройки камеры:", advanced);
                             }
                         } catch (e) {
                             console.warn("Не удалось применить расширенные настройки (zoom/focus):", e);
@@ -177,23 +242,17 @@
                     const text = result.text;
                     const parts = text.split(';');
                     
-                    // Проверка формата (ожидаем минимум 2 поля)
                     if (parts.length >= 2) {
-                        const extractedCode = parts[1]; // Берем второе поле
+                        const extractedCode = parts[1];
                         stopCamera();
                         showBarcodeResult(extractedCode);
                     } else {
-                        // Если QR не того формата, продолжаем искать
                         setTimeout(scanLoop, 100);
                     }
                 })
                 .catch(err => {
-                    // Игнорируем ошибку NotFoundException (когда штрихкод не найден в текущем кадре)
-                    if (err && err.name !== 'NotFoundException') {
-                        console.warn("Ошибка декодирования:", err);
-                    }
                     if (isScanning) {
-                        setTimeout(scanLoop, 100); // 10 FPS для экономии батареи и стабильной работы
+                        setTimeout(scanLoop, 100); 
                     }
                 });
         }
@@ -202,7 +261,6 @@
             scannerContainer.style.display = 'none';
             resultContainer.style.display = 'flex';
 
-            // Генерация Code128 в SVG через JsBarcode
             JsBarcode("#barcode", codeText, {
                 format: "CODE128",
                 displayValue: true,
@@ -215,28 +273,18 @@
             });
         }
 
-        // Обработка тапа по результату для нового сканирования
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
-            scannerContainer.style.display = 'flex';
-            
-            // Очистка предыдущего штрихкода (необязательно, но полезно)
             document.getElementById('barcode').innerHTML = '';
-            
+            // Перезапускаем камеру сразу по тапу (жест пользователя есть, проблем не будет)
             startCamera();
         });
 
-        // Запуск камеры при загрузке страницы
-        window.addEventListener('load', () => {
-            startCamera();
-        });
-
-        // Корректное освобождение камеры при закрытии/скрытии вкладки
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopCamera();
             } else {
-                if (resultContainer.style.display !== 'flex') {
+                if (resultContainer.style.display !== 'flex' && startScreen.style.display === 'none') {
                     startCamera();
                 }
             }
