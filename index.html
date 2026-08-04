@@ -124,21 +124,22 @@
         }
     </style>
     
-    <script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
+    <!-- Надежный сканер пикселей jsQR + генератор Barcode -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 </head>
 <body>
 
     <div id="start-screen">
         <h2 style="margin-bottom: 8px;">QR Сканер</h2>
-        <p style="color: #aaa; margin: 0;">Сканирует QR-коды с любого расстояния</p>
+        <p style="color: #aaa; margin: 0;">Мгновенное сканирование с любого расстояния</p>
         <button id="start-button">Включить камеру</button>
         <div id="error-log"></div>
     </div>
 
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
-        <div id="scan-hint">Наведите камеру на QR-код</div>
+        <div id="scan-hint">Покажите QR-код камере</div>
     </div>
 
     <div id="result-container">
@@ -149,25 +150,9 @@
     <script>
         let stream = null;
         let isScanning = false;
-        let isProcessingFrame = false;
-        let scanTimer = null;
 
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-        // Инициализация нативного сканера Apple Vision (работает мгновенно в Safari)
-        let nativeBarcodeDetector = null;
-        if ('BarcodeDetector' in window) {
-            try {
-                nativeBarcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
-            } catch (e) {}
-        }
-
-        // Запасной сканер ZXing
-        const hints = new Map();
-        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
-        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-        const zxingReader = new ZXing.BrowserQRCodeReader(hints);
 
         const videoElement = document.getElementById('video');
         const startScreen = document.getElementById('start-screen');
@@ -187,8 +172,8 @@
             const constraints = {
                 video: {
                     facingMode: { ideal: "environment" },
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 }
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
                 }
             };
 
@@ -203,14 +188,11 @@
                 scannerContainer.style.display = 'flex';
 
                 isScanning = true;
-                isProcessingFrame = false;
-                
-                // Запускаем разумный интервал опроса (раз в 120мс) вместо жесткого цикла
-                scanTimer = setInterval(processFrame, 120);
+                requestAnimationFrame(scanFrame);
 
             } catch (error) {
                 console.error("Ошибка камеры:", error);
-                errorLog.innerText = "Ошибка камеры: " + (error.message || error.name);
+                errorLog.innerText = "Ошибка запуска камеры: " + (error.message || error.name);
                 startScreen.style.display = 'flex';
                 scannerContainer.style.display = 'none';
             }
@@ -218,10 +200,6 @@
 
         function stopCamera() {
             isScanning = false;
-            if (scanTimer) {
-                clearInterval(scanTimer);
-                scanTimer = null;
-            }
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
                 stream = null;
@@ -229,54 +207,36 @@
             videoElement.srcObject = null;
         }
 
-        async function processFrame() {
-            if (!isScanning || isProcessingFrame) return;
-            if (videoElement.readyState < 2 || videoElement.videoWidth === 0) return;
+        function scanFrame() {
+            if (!isScanning) return;
 
-            isProcessingFrame = true;
-
-            try {
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
                 canvas.width = videoElement.videoWidth;
                 canvas.height = videoElement.videoHeight;
                 ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
 
-                let codeText = null;
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                
+                // jsQR сканирует картинку с учётом инверсии и сложных контрастов
+                const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: "attemptBoth"
+                });
 
-                // 1. Быстрая попытка нативным сканером iOS
-                if (nativeBarcodeDetector) {
-                    try {
-                        const barcodes = await nativeBarcodeDetector.detect(canvas);
-                        if (barcodes && barcodes.length > 0) {
-                            codeText = barcodes[0].rawValue;
-                        }
-                    } catch (e) {}
-                }
-
-                // 2. Если нативный не распознал — задействуем ZXing по холсту
-                if (!codeText) {
-                    try {
-                        const result = await zxingReader.decodeFromCanvas(canvas);
-                        if (result) {
-                            codeText = result.text;
-                        }
-                    } catch (e) {}
-                }
-
-                if (codeText && isScanning) {
-                    handleCodeFound(codeText);
+                if (code && code.data && isScanning) {
+                    handleCodeFound(code.data);
                     return;
                 }
-            } catch (err) {
-                console.warn(err);
-            } finally {
-                isProcessingFrame = false;
+            }
+
+            if (isScanning) {
+                requestAnimationFrame(scanFrame);
             }
         }
 
         function handleCodeFound(rawText) {
             let extractedCode = rawText;
 
-            // Парсим строку вида: CEN;4600721000523;88.89;1;6;23.07.26
+            // Парсинг строки вида: CEN;4600721000523;88.89;1;6;23.07.26
             if (rawText.includes(';')) {
                 const parts = rawText.split(';');
                 if (parts.length >= 2) {
@@ -311,7 +271,7 @@
             }
         }
 
-        // Повторное сканирование по клику на результат
+        // Повторный запуск по клику
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
@@ -323,7 +283,7 @@
             startCamera();
         });
 
-        // Отключение камеры при сворачивании Safari
+        // Пауза при сворачивании
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopCamera();
@@ -336,3 +296,4 @@
     </script>
 </body>
 </html>
+
