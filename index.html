@@ -124,7 +124,6 @@
         }
     </style>
     
-    <!-- Надежный сканер пикселей jsQR + генератор Barcode -->
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 </head>
@@ -132,14 +131,14 @@
 
     <div id="start-screen">
         <h2 style="margin-bottom: 8px;">QR Сканер</h2>
-        <p style="color: #aaa; margin: 0;">Мгновенное сканирование с любого расстояния</p>
+        <p style="color: #aaa; margin: 0;">Мгновенный сканер</p>
         <button id="start-button">Включить камеру</button>
         <div id="error-log"></div>
     </div>
 
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
-        <div id="scan-hint">Покажите QR-код камере</div>
+        <div id="scan-hint">Наведите камеру на QR-код</div>
     </div>
 
     <div id="result-container">
@@ -150,9 +149,18 @@
     <script>
         let stream = null;
         let isScanning = false;
+        let isProcessing = false;
 
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        // Нативный распознаватель iOS (если поддерживается браузером)
+        let nativeDetector = null;
+        if ('BarcodeDetector' in window) {
+            try {
+                nativeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+            } catch (e) {}
+        }
 
         const videoElement = document.getElementById('video');
         const startScreen = document.getElementById('start-screen');
@@ -188,6 +196,7 @@
                 scannerContainer.style.display = 'flex';
 
                 isScanning = true;
+                isProcessing = false;
                 requestAnimationFrame(scanFrame);
 
             } catch (error) {
@@ -207,25 +216,57 @@
             videoElement.srcObject = null;
         }
 
-        function scanFrame() {
+        async function scanFrame() {
             if (!isScanning) return;
 
-            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                canvas.width = videoElement.videoWidth;
-                canvas.height = videoElement.videoHeight;
-                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA && !isProcessing) {
+                isProcessing = true;
+                let foundText = null;
 
-                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                
-                // jsQR сканирует картинку с учётом инверсии и сложных контрастов
-                const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                    inversionAttempts: "attemptBoth"
-                });
+                // 1. Мгновенная проверка через нативный движок Apple (если доступен)
+                if (nativeDetector) {
+                    try {
+                        const barcodes = await nativeDetector.detect(videoElement);
+                        if (barcodes.length > 0) {
+                            foundText = barcodes[0].rawValue;
+                        }
+                    } catch (e) {}
+                }
 
-                if (code && code.data && isScanning) {
-                    handleCodeFound(code.data);
+                // 2. Быстрая проверка через jsQR со сжатым холстом
+                if (!foundText) {
+                    const targetWidth = 640; // Оптимальная ширина для легкой и быстрой обработки
+                    let vw = videoElement.videoWidth;
+                    let vh = videoElement.videoHeight;
+
+                    let scale = targetWidth / vw;
+                    let w = targetWidth;
+                    let h = Math.round(vh * scale);
+
+                    if (canvas.width !== w || canvas.height !== h) {
+                        canvas.width = w;
+                        canvas.height = h;
+                    }
+
+                    ctx.drawImage(videoElement, 0, 0, w, h);
+                    const imageData = ctx.getImageData(0, 0, w, h);
+
+                    // dontInvert отключает поиск белых кодов на черном, ускоряя jsQR в 2 раза
+                    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: "dontInvert"
+                    });
+
+                    if (code && code.data) {
+                        foundText = code.data;
+                    }
+                }
+
+                if (foundText && isScanning) {
+                    handleCodeFound(foundText);
                     return;
                 }
+
+                isProcessing = false;
             }
 
             if (isScanning) {
@@ -236,7 +277,7 @@
         function handleCodeFound(rawText) {
             let extractedCode = rawText;
 
-            // Парсинг строки вида: CEN;4600721000523;88.89;1;6;23.07.26
+            // Извлечение кода из CEN;4600721000523;88.89;1;6;23.07.26
             if (rawText.includes(';')) {
                 const parts = rawText.split(';');
                 if (parts.length >= 2) {
@@ -271,7 +312,7 @@
             }
         }
 
-        // Повторный запуск по клику
+        // Повторный запуск
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
@@ -296,4 +337,3 @@
     </script>
 </body>
 </html>
-
