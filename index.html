@@ -46,7 +46,6 @@
             cursor: pointer;
             margin-top: 24px;
             box-shadow: 0 4px 12px rgba(52, 199, 89, 0.3);
-            transition: transform 0.1s ease;
         }
 
         #start-button:active {
@@ -80,58 +79,20 @@
             z-index: 1;
         }
 
-        #aim-box {
-            width: 250px;
-            height: 250px;
-            border: 2.5px solid rgba(255, 255, 255, 0.85);
-            border-radius: 24px;
-            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.55);
+        /* Минималистичная подсказка вместо жесткой рамки */
+        #scan-hint {
             position: absolute;
-            z-index: 2;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            pointer-events: none;
-        }
-
-        #aim-box::after {
-            content: '';
-            width: 85%;
-            height: 2px;
-            background-color: #30d158;
-            box-shadow: 0 0 12px #30d158;
-            position: absolute;
-            animation: scanline 2.2s ease-in-out infinite;
-        }
-
-        @keyframes scanline {
-            0% { transform: translateY(-100px); }
-            50% { transform: translateY(100px); }
-            100% { transform: translateY(-100px); }
-        }
-
-        #ui-controls {
-            position: absolute;
-            bottom: 40px;
-            left: 0;
-            width: 100%;
+            top: 60px;
             z-index: 5;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .action-btn {
-            background-color: rgba(0, 0, 0, 0.6);
+            background: rgba(0, 0, 0, 0.6);
             color: #fff;
-            border: 1px solid rgba(255, 255, 255, 0.3);
             padding: 10px 20px;
             border-radius: 20px;
-            font-size: 15px;
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            cursor: pointer;
+            font-size: 14px;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            text-align: center;
+            pointer-events: none;
         }
 
         #result-container {
@@ -171,17 +132,14 @@
 
     <div id="start-screen">
         <h2 style="margin-bottom: 8px;">QR Сканер</h2>
-        <p style="color: #aaa; margin: 0;">Нажмите для запуска камеры</p>
+        <p style="color: #aaa; margin: 0;">Сканирует QR-коды с любого расстояния</p>
         <button id="start-button">Включить камеру</button>
         <div id="error-log"></div>
     </div>
 
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
-        <div id="aim-box"></div>
-        <div id="ui-controls">
-            <button id="switch-camera-btn" class="action-btn" style="display: none;">🔄 Сменить камеру</button>
-        </div>
+        <div id="scan-hint">Наведите камеру на QR-код</div>
     </div>
 
     <div id="result-container">
@@ -192,15 +150,22 @@
     <script>
         let stream = null;
         let isScanning = false;
-        let videoDevices = [];
-        let currentDeviceIndex = 0;
+        let nativeBarcodeDetector = null;
 
-        // Использование профильного QRCodeReader для мгновенного отклика
+        // Инициализация нативного сканера Apple Vision (если поддерживается iOS)
+        if ('BarcodeDetector' in window) {
+            try {
+                nativeBarcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
+            } catch (e) {
+                console.log("BarcodeDetector fallback to ZXing");
+            }
+        }
+
+        // Запасной ридер ZXing
         const hints = new Map();
         hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
         hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-
-        const codeReader = new ZXing.BrowserQRCodeReader(hints);
+        const zxingReader = new ZXing.BrowserQRCodeReader(hints);
 
         const videoElement = document.getElementById('video');
         const startScreen = document.getElementById('start-screen');
@@ -208,74 +173,26 @@
         const resultContainer = document.getElementById('result-container');
         const errorLog = document.getElementById('error-log');
         const instructionText = document.getElementById('instruction');
-        const switchBtn = document.getElementById('switch-camera-btn');
 
-        document.getElementById('start-button').addEventListener('click', async () => {
+        document.getElementById('start-button').addEventListener('click', () => {
             errorLog.innerText = "";
-            await initCameras();
-            startScanner();
+            startCamera();
         });
 
-        switchBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (videoDevices.length > 1) {
-                currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
-                stopCamera();
-                startScanner();
-            }
-        });
-
-        async function initCameras() {
-            try {
-                let initStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                
-                videoDevices = devices.filter(d => 
-                    d.kind === 'videoinput' && 
-                    !d.label.toLowerCase().includes('front') && 
-                    !d.label.toLowerCase().includes('передн')
-                );
-
-                if (videoDevices.length > 1) {
-                    switchBtn.style.display = 'block';
-                }
-
-                // Выбираем основную камеру (не ширик и не телевик)
-                let mainCamIndex = videoDevices.findIndex(d => 
-                    !d.label.toLowerCase().includes('ultra') && 
-                    !d.label.toLowerCase().includes('сверх') &&
-                    !d.label.toLowerCase().includes('tele')
-                );
-
-                if (mainCamIndex !== -1) {
-                    currentDeviceIndex = mainCamIndex;
-                }
-
-                initStream.getTracks().forEach(t => t.stop());
-            } catch (err) {
-                console.warn("Ошибка поиска камер:", err);
-            }
-        }
-
-        async function startScanner() {
+        async function startCamera() {
             if (stream) stopCamera();
 
-            let videoConstraint = {
-                facingMode: { ideal: "environment" },
-                width: { ideal: 1920 },
-                height: { ideal: 1080 }
-            };
-
-            if (videoDevices.length > 0 && videoDevices[currentDeviceIndex]) {
-                videoConstraint = {
-                    deviceId: { exact: videoDevices[currentDeviceIndex].deviceId },
+            // Простой и надежный запрос к задней камере в Full HD
+            const constraints = {
+                video: {
+                    facingMode: { ideal: "environment" },
                     width: { ideal: 1920 },
                     height: { ideal: 1080 }
-                };
-            }
+                }
+            };
 
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint });
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = stream;
                 videoElement.setAttribute("playsinline", "true");
 
@@ -284,57 +201,19 @@
                 startScreen.style.display = 'none';
                 scannerContainer.style.display = 'flex';
 
-                await applyOptimalCameraConstraints();
-
                 isScanning = true;
                 scanLoop();
 
             } catch (error) {
-                console.error("Ошибка запуска:", error);
-                errorLog.innerText = "Не удалось открыть камеру: " + error.message;
+                console.error("Ошибка запуска камеры:", error);
+                errorLog.innerText = "Не удалось открыть камеру: " + (error.message || error.name);
                 startScreen.style.display = 'flex';
                 scannerContainer.style.display = 'none';
             }
         }
 
-        async function applyOptimalCameraConstraints() {
-            try {
-                if (!stream) return;
-                const track = stream.getVideoTracks()[0];
-                if (!track || typeof track.getCapabilities !== 'function') return;
-
-                const capabilities = track.getCapabilities();
-                const advanced = {};
-                let hasChanges = false;
-
-                // Включаем постоянную фокусировку
-                if (capabilities.focusMode && capabilities.focusMode.includes("continuous")) {
-                    advanced.focusMode = "continuous";
-                    hasChanges = true;
-                }
-
-                // Аккуратный оптический/цифровой зум до 2.0x без мыла и потери фокуса
-                if (capabilities.zoom) {
-                    const targetZoom = Math.min(capabilities.zoom.max, 2.0);
-                    if (targetZoom > (capabilities.zoom.min || 1)) {
-                        advanced.zoom = targetZoom;
-                        hasChanges = true;
-                    }
-                }
-
-                if (hasChanges) {
-                    await track.applyConstraints({ advanced: [advanced] });
-                }
-            } catch (e) {
-                console.warn("Ошибка применимости constraints:", e);
-            }
-        }
-
         function stopCamera() {
             isScanning = false;
-            if (codeReader) {
-                codeReader.reset();
-            }
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
                 stream = null;
@@ -342,31 +221,48 @@
             videoElement.srcObject = null;
         }
 
-        function scanLoop() {
+        async function scanLoop() {
             if (!isScanning) return;
 
-            codeReader.decodeOnceFromVideoElement(videoElement)
-                .then(result => {
-                    if (!isScanning) return;
-                    const text = result.text;
-                    let extractedCode = text;
-
-                    // Извлечение второго поля из CEN;4600721000523;88.89;1;6;23.07.26
-                    if (text.includes(';')) {
-                        const parts = text.split(';');
-                        if (parts.length >= 2) {
-                            extractedCode = parts[1];
-                        }
+            // 1. Попытка нативного сканирования (быстрое, с любого угла и расстояния)
+            if (nativeBarcodeDetector) {
+                try {
+                    const barcodes = await nativeBarcodeDetector.detect(videoElement);
+                    if (barcodes.length > 0 && isScanning) {
+                        handleCodeFound(barcodes[0].rawValue);
+                        return;
                     }
+                } catch (e) {}
+            }
 
-                    stopCamera();
-                    showBarcodeResult(extractedCode);
-                })
-                .catch(err => {
-                    if (isScanning) {
-                        setTimeout(scanLoop, 80);
-                    }
-                });
+            // 2. Запасной вариант через ZXing
+            try {
+                const result = await zxingReader.decodeOnceFromVideoElement(videoElement);
+                if (result && isScanning) {
+                    handleCodeFound(result.text);
+                    return;
+                }
+            } catch (err) {}
+
+            // Продолжаем цикл сканирования
+            if (isScanning) {
+                requestAnimationFrame(scanLoop);
+            }
+        }
+
+        function handleCodeFound(rawText) {
+            let extractedCode = rawText;
+
+            // Извлечение кода из CEN;4600721000523;88.89;1;6;23.07.26
+            if (rawText.includes(';')) {
+                const parts = rawText.split(';');
+                if (parts.length >= 2) {
+                    extractedCode = parts[1];
+                }
+            }
+
+            stopCamera();
+            showBarcodeResult(extractedCode);
         }
 
         function showBarcodeResult(codeText) {
@@ -392,7 +288,7 @@
             }
         }
 
-        // Повторный запуск по тапу на экран результата
+        // Повторный запуск по тапу
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
@@ -401,21 +297,16 @@
             instructionText.style.color = '#666666';
             instructionText.style.fontWeight = "normal";
 
-            startScanner();
+            startCamera();
         });
 
-        // Тап по области сканера повторно запрашивает фокусировку
-        scannerContainer.addEventListener('click', (e) => {
-            if (e.target.id === 'switch-camera-btn') return;
-            applyOptimalCameraConstraints();
-        });
-
+        // Пауза при сворачивании Safari
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
                 stopCamera();
             } else {
                 if (resultContainer.style.display !== 'flex' && startScreen.style.display === 'none') {
-                    startScanner();
+                    startCamera();
                 }
             }
         });
