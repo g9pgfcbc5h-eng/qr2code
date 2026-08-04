@@ -79,6 +79,16 @@
             z-index: 1;
         }
 
+        #overlay {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 2;
+            pointer-events: none;
+        }
+
         #scan-hint {
             position: absolute;
             top: 50px;
@@ -131,13 +141,14 @@
 
     <div id="start-screen">
         <h2 style="margin-bottom: 8px;">QR Сканер</h2>
-        <p style="color: #aaa; margin: 0;">Мгновенный сканер</p>
+        <p style="color: #aaa; margin: 0;">Сканер с визуальным прицелом</p>
         <button id="start-button">Включить камеру</button>
         <div id="error-log"></div>
     </div>
 
     <div id="scanner-container">
         <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlay"></canvas>
         <div id="scan-hint">Наведите камеру на QR-код</div>
     </div>
 
@@ -151,10 +162,12 @@
         let isScanning = false;
         let isProcessing = false;
 
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const processCanvas = document.createElement('canvas');
+        const processCtx = processCanvas.getContext('2d', { willReadFrequently: true });
 
-        // Нативный распознаватель iOS (если поддерживается браузером)
+        const overlayCanvas = document.getElementById('overlay');
+        const overlayCtx = overlayCanvas.getContext('2d');
+
         let nativeDetector = null;
         if ('BarcodeDetector' in window) {
             try {
@@ -209,11 +222,59 @@
 
         function stopCamera() {
             isScanning = false;
+            if (overlayCtx) {
+                overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+            }
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
                 stream = null;
             }
             videoElement.srcObject = null;
+        }
+
+        // Отрисовка подсвечивающей рамки поверх QR-кода
+        function drawHighlightBox(points, videoW, videoH) {
+            const containerW = scannerContainer.clientWidth;
+            const containerH = scannerContainer.clientHeight;
+
+            overlayCanvas.width = containerW;
+            overlayCanvas.height = containerH;
+
+            overlayCtx.clearRect(0, 0, containerW, containerH);
+
+            // Расчет масштабирования с учетом object-fit: cover
+            const videoRatio = videoW / videoH;
+            const containerRatio = containerW / containerH;
+
+            let renderW, renderH, offsetX, offsetY;
+
+            if (containerRatio > videoRatio) {
+                renderW = containerW;
+                renderH = containerW / videoRatio;
+                offsetX = 0;
+                offsetY = (containerH - renderH) / 2;
+            } else {
+                renderH = containerH;
+                renderW = containerH * videoRatio;
+                offsetX = (containerW - renderW) / 2;
+                offsetY = 0;
+            }
+
+            const mapX = (x) => offsetX + (x / videoW) * renderW;
+            const mapY = (y) => offsetY + (y / videoH) * renderH;
+
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(mapX(points[0].x), mapY(points[0].y));
+            for (let i = 1; i < points.length; i++) {
+                overlayCtx.lineTo(mapX(points[i].x), mapY(points[i].y));
+            }
+            overlayCtx.closePath();
+
+            overlayCtx.lineWidth = 5;
+            overlayCtx.strokeStyle = '#00FF66';
+            overlayCtx.fillStyle = 'rgba(0, 255, 102, 0.35)';
+            overlayCtx.stroke();
+            overlayCtx.fill();
         }
 
         async function scanFrame() {
@@ -222,47 +283,73 @@
             if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA && !isProcessing) {
                 isProcessing = true;
                 let foundText = null;
+                let pointsToDraw = null;
+                let srcW = videoElement.videoWidth;
+                let srcH = videoElement.videoHeight;
 
-                // 1. Мгновенная проверка через нативный движок Apple (если доступен)
+                // 1. Попытка через нативный модуль Apple
                 if (nativeDetector) {
                     try {
                         const barcodes = await nativeDetector.detect(videoElement);
                         if (barcodes.length > 0) {
                             foundText = barcodes[0].rawValue;
+                            if (barcodes[0].cornerPoints) {
+                                pointsToDraw = barcodes[0].cornerPoints;
+                            }
                         }
                     } catch (e) {}
                 }
 
-                // 2. Быстрая проверка через jsQR со сжатым холстом
+                // 2. Попытка через jsQR
                 if (!foundText) {
-                    const targetWidth = 640; // Оптимальная ширина для легкой и быстрой обработки
-                    let vw = videoElement.videoWidth;
-                    let vh = videoElement.videoHeight;
-
-                    let scale = targetWidth / vw;
+                    const targetWidth = 800; // Оптимальное разрешение для мелких кодов
+                    let scale = targetWidth / srcW;
                     let w = targetWidth;
-                    let h = Math.round(vh * scale);
+                    let h = Math.round(srcH * scale);
 
-                    if (canvas.width !== w || canvas.height !== h) {
-                        canvas.width = w;
-                        canvas.height = h;
+                    if (processCanvas.width !== w || processCanvas.height !== h) {
+                        processCanvas.width = w;
+                        processCanvas.height = h;
                     }
 
-                    ctx.drawImage(videoElement, 0, 0, w, h);
-                    const imageData = ctx.getImageData(0, 0, w, h);
+                    processCtx.drawImage(videoElement, 0, 0, w, h);
+                    const imageData = processCtx.getImageData(0, 0, w, h);
 
-                    // dontInvert отключает поиск белых кодов на черном, ускоряя jsQR в 2 раза
                     const code = jsQR(imageData.data, imageData.width, imageData.height, {
                         inversionAttempts: "dontInvert"
                     });
 
                     if (code && code.data) {
                         foundText = code.data;
+                        if (code.location) {
+                            // Пересчитываем координаты со сжатого холста обратно в исходный размер видео
+                            const unscaleX = srcW / w;
+                            const unscaleY = srcH / h;
+                            pointsToDraw = [
+                                { x: code.location.topLeftCorner.x * unscaleX, y: code.location.topLeftCorner.y * unscaleY },
+                                { x: code.location.topRightCorner.x * unscaleX, y: code.location.topRightCorner.y * unscaleY },
+                                { x: code.location.bottomRightCorner.x * unscaleX, y: code.location.bottomRightCorner.y * unscaleY },
+                                { x: code.location.bottomLeftCorner.x * unscaleX, y: code.location.bottomLeftCorner.y * unscaleY }
+                            ];
+                        }
                     }
                 }
 
                 if (foundText && isScanning) {
-                    handleCodeFound(foundText);
+                    // Рисуем подсвечивающий квадрат
+                    if (pointsToDraw) {
+                        drawHighlightBox(pointsToDraw, srcW, srcH);
+                    }
+                    
+                    // Виброотклик
+                    if (navigator.vibrate) {
+                        navigator.vibrate(100);
+                    }
+
+                    // Задержка 250 мс, чтобы пользователь визуально засек вспышку зеленой рамки
+                    setTimeout(() => {
+                        handleCodeFound(foundText);
+                    }, 250);
                     return;
                 }
 
@@ -277,7 +364,6 @@
         function handleCodeFound(rawText) {
             let extractedCode = rawText;
 
-            // Извлечение кода из CEN;4600721000523;88.89;1;6;23.07.26
             if (rawText.includes(';')) {
                 const parts = rawText.split(';');
                 if (parts.length >= 2) {
@@ -312,7 +398,7 @@
             }
         }
 
-        // Повторный запуск
+        // Повторный запуск по тапу
         resultContainer.addEventListener('click', () => {
             resultContainer.style.display = 'none';
             document.getElementById('barcode').innerHTML = '';
